@@ -1,0 +1,41 @@
+---
+title: "Regression Assumptinos"
+author: "Rodney Murray"
+date: "5/13/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+The assumptions for linear regression are often stated as follows:
+* Linearity - no trend present in residuals
+* Constant variance
+* Residuals are normally distributed
+* Residuals are not correlated (independence of residuals)
+
+Many of us are quite familiar with at least on or more of these assumptions, and some are more intuitive than others as to why they are important and what kind of impacts violation of those assumptions may have. Meanwhile some of these assumptions may not be as obvious to those who do not have formal training or regularly practice statistics, and the impacts of violations of these assumptions are may be even less clear. Understanding these assumptions and the impacts from violations are key to understanding when we should be concerned, and what we can or should do to remedy these violations. My goal in the below is to discuss each of the assumptions in more detail, and provide more context as to when we really need to pay attention and when it may not be as much of a concern (TLDR: it all depends on what your goals are!).
+
+## Background
+First lets define the model for the **population**, we can do this in a couple of ways. One common notation is as follows:
+$$Y = \beta_0 + \beta_1X + \epsilon$$
+Where:
+  * $X$ is our predictor variable
+  * $Y$ is our response variable
+  * $\beta_0$ is our Y-intercept
+  * $\beta_1$ is the slope describing the relationship between $X$ and $Y$
+  * $\epsilon$ is the random error, often associated with measurement error and $E[\epsilon]=0$, and must be correlated.
+  
+**Note:** For those note familiar with expectations $E[\epsilon]=0$ can be read as "The expectation of $\epsilon$ is 0" or in more familiar terms "The mean of $\epsilon$ is 0.
+
+We can also write the model in a different form, which may more clearly portions of what we are looking to accomplish.
+
+$$\mu_{Y|X} = \beta_0 + \beta_1 X$$
+
+Notice that we have note said anything about how the errors are distributed yet, and depending on the goals of the model, this can be okay! Often times, we attempt to avoid assuming a distribution needs to apply  For this model to apply we need 3 of our 4 assumptions stated in the summary. It should be clear that $Y$ needs to have a linear relationship with $X$. It should also be clear that the errors need to have constant variance, since we have only $\epsilon$ to describe those errors. To those who are not used to working with these models in this context, it may not be clear that the errors need to be independent and uncorrelated, but this does turn out to be a key assumption!
+
+Now, we very rarely get to work with a "population", but are most likely working with a sample. Because of this it can be very good to understand the uncertainty in our estimates of the true parameter values for the population or data generating process. Because of this we should re-write our model in a differnt way, and add an assumption so we can make statements about the uncertainty:
+
+$$\hat Y = \hat \beta_0 + \hat \beta_1 X$$
