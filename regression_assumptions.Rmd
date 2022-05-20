@@ -9,6 +9,16 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r, echo=F, result=F, message=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(car)
+source('iterative_wls.R')
+```
+
+
 ## Summary
 The assumptions for linear regression are often stated as follows:
 * Linearity - no trend present in residuals
@@ -36,6 +46,425 @@ $$\mu_{Y|X} = \beta_0 + \beta_1 X$$
 
 Notice that we have note said anything about how the errors are distributed yet, and depending on the goals of the model, this can be okay! Often times, we attempt to avoid assuming a distribution needs to apply  For this model to apply we need 3 of our 4 assumptions stated in the summary. It should be clear that $Y$ needs to have a linear relationship with $X$. It should also be clear that the errors need to have constant variance, since we have only $\epsilon$ to describe those errors. To those who are not used to working with these models in this context, it may not be clear that the errors need to be independent and uncorrelated, but this does turn out to be a key assumption!
 
-Now, we very rarely get to work with a "population", but are most likely working with a sample. Because of this it can be very good to understand the uncertainty in our estimates of the true parameter values for the population or data generating process. Because of this we should re-write our model in a differnt way, and add an assumption so we can make statements about the uncertainty:
+Now, we very rarely get to work with a "population", but are most likely working with a sample. Because of this it can be very good to understand the uncertainty in our estimates of the true parameter values for the population or data generating process. Because of this we should re-write our model in a different way, and add an assumption so we can make statements about the uncertainty:
 
 $$\hat Y = \hat \beta_0 + \hat \beta_1 X$$
+
+And now we assume $\epsilon \stackrel {iid} {\sim} N(0,\sigma^2)$ (iid means identically and independently distributed).
+
+So we can write our model in yet another fashion for the population
+$$Y_i \sim N(\beta_0 + \beta_1 X_i, \sigma^2)$$
+
+When we make this assumption, then we can understand the distribution of $\hat \beta_0$ and $\hat \beta_0$. If we happened to know $\sigma^2$ then they would be normally distributed, but because we also have to estimate $\sigma^2$ from a sample, then $\hat \beta_0$ and $\hat \beta_1$ follow a T distribution. 
+
+So, that's great that we've been able to list out our assumptions, but how well do we really understand them, what happens when they are broken, and what can we do to address potential violations. In the following sections I will address this questions, in particular, what is the impact when the assumption is violated. It should be noted that in the case above I described simple linear regression (1 $X$ variable and 1 $Y$ variable), I will ultimately use some multiple regression methods, which are a natural extension of simple linear regression where we have more than 1 $X$ variable, but we will always have 1 $Y$ variable.
+
+## Linearity
+Fortunately most engineers and other scientists I've worked with are quick to identify these types of problems, and as such this section should be quite straightforward. If the relationship between $X$ and $Y$ isn't really linear, then our model will do a poor job of describing the relationship as well as predicting new values. Lets illustrate this where we generate a non-linear sample from a simple quadratic function:
+
+```{r, echo=F}
+set.seed(42)
+n_sample <- 25
+x <- rnorm(n_sample, mean=0, sd=2)
+y <- 0.1 * x + 0.3 * x ^ 2 + rnorm(n_sample, sd=2)
+df <- data.frame(x, y)
+
+linear <- lm(y~x, data=df)
+
+ggplot(df, aes(x=x, y=y)) + 
+  geom_point() +
+  geom_abline(intercept=linear$coefficients['(Intercept)'], slope=linear$coefficients['x'], color='red') +
+  labs(title='Data and Model') +
+  geom_blank()
+
+summary(linear)
+```
+We can see from the above that the model may not really fit the data very well, and we should try something else. A common way in many cases which may not be straight forward is to look for a trend in the residuals (remember the mean shoudl be 0). When we look at the residuals as plotted below we can see a trend which would not exist if there was a linear relationship between $X$ and $Y$. Even if we just looked at some of the statistics from R we would be suspect of this model given the low R^2. 
+
+```{r, echo=F}
+plot_resids <- function(model, span=5.0) {
+  ggplot() + 
+    geom_point(aes(x=model$fitted, y=model$residuals)) + 
+    geom_smooth(aes(x=model$fitted, y=model$residuals), span=span) + 
+    labs(title='Residuals vs. Predictor', x='Fitted Values', y='Residuals')
+}
+plot_resids(linear)
+```
+
+Of course as we know we can fit a second order polynomial and get a good fit, lets see what that looks like:
+```{r, echo=F}
+df$x_2 <- df$x ^ 2
+poly <- lm(y~x + x_2, data=df)
+
+pred <- predict(poly, df)
+
+ggplot(df, aes(x=x, y=y)) + 
+  geom_point() +
+  geom_line(aes(x=x, y=pred), color='red')
+summary(poly)
+```
+Just from this we can already see that the model fit is much better, we are capturing the trend in the data and our model metrics appear much better (much higher $R^2$ for example). We should also take a look a look at the residuals to maek sure there's not a clear trend, which is now the case.
+
+```{r}
+plot_resids(poly, span=2.0)
+```
+
+There are other methods for different cases, such as transformations that could be applied to $Y$, but the impact on the ability of the model to accomplish its goals should be clear. When transformations are applied to any of the variables, we should think about if they really make sense and not just chase the best metrics. Adding polynomial features can also be problematic when the model is used to extrapolate, so they should be added with caution, and cross validation techniques should be used to verify predictive power of the model.
+
+## Constant Variance
+
+### Background and Identification
+Unfortunately we now start to delve into territory which I have not observed many (or any) engineers and other scientists verifying that these assumptions are met. Fortunately the assumption of constant variance is relatively easy to verify and can be relatively easy to remedy when violated. The impacts can be important, but may not be immediately obvious. First lets examine the following relationship.
+```{r}
+set.seed(42)
+n_sample <- 50
+x_log <- rnorm(n_sample, 10)
+y_log <- 3 + x_log + rnorm(n_sample, sd=0.5)
+x <- exp(x_log)
+y <- exp(y_log)
+
+linear <- lm(y~x)
+
+ggplot() +
+  geom_point(aes(x=x, y=y), alpha=0.6) +
+  geom_abline(intercept = linear$coefficients['(Intercept)'], slope=linear$coefficients['x'], color='red')
+  labs('Data and Model')
+
+summary(linear)
+```
+
+This model might not appear so bad to the untrained eye, but let's take a look at the residuals:
+```{r}
+plot_resids(linear)
+```
+From the residuals we can see that there's not really a trend in the mean of the residuals that we should be concerned about, however we can see that their variance increases significantly with larger values. This is clearly bad, but what is there to be concerned about? 
+
+### Effects of Assumption Violation
+To better understand what the effects are of violation the assumption I will repeatedly sample sample from a data set that can be modeled as $Y \sim exp(3 + X + N(\mu=0, \sigma^2=0.5^2))$. For each sample we will fit a linear regression model, record the fitted parameters and confidence intervals and analyze how the parameters are distributed and the coverage of the confidence intervals.
+
+```{r}
+n_sample <- 50 # Number of points in each sample
+n_sim <- 1000 # Number of simulations to run
+set.seed(60)
+seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
+true_val <- exp(3) # True value of the slope
+
+dfs <- data.frame()
+for (i in 1:n_sim) {
+  set.seed(seeds[i])
+  
+  # Get the X and Y data described by the model above
+  x_log <- rnorm(n_sample, 10)
+  y_log <- 3 + x_log + rnorm(n_sample, sd=0.5)
+  x <- exp(x_log)
+  y <- exp(y_log)
+
+  # Fit the model and record its parameters
+  model <- lm(y~x)
+  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+  df$iter <- i
+  dfs <- rbind(dfs, df)
+}
+
+# Filter to just the slope parameter and plot a distribution of the calculated slopes
+slopes <- filter(dfs, term=='x')
+ggplot(slopes, aes(x=estimate)) +
+  geom_vline(aes(xintercept=true_val, color='True Value')) +
+  geom_vline(aes(xintercept=mean(slopes$estimate), color='Mean Estimated Value')) +
+  geom_density(aes(color='Estimate Density')) +
+  geom_rug() +
+  labs(x='Estimated Value', y='Density')
+```
+
+Above we can see how the estimate of the slope is distributed. If our assumptions were followed we would expect the estimate to follow a T distribution since we don't know the standard error and have to estimate it; if we did know the standard error it would follow a normal distribution. Instead we see something that has a heavy tail on the right side and looks very far from normal. Knowing this we should probably expect our confidence intervals to have poor coverage. In the plot we can also see that the average estimated value is quit different from our true value (which we know since we created the data) indicating that our estimates are biased. 
+  
+```{r}
+# Calculate when an estimates confidence interval does not include the true value
+slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+
+# Calculate the fraction of observations where the true value is not included
+mean(slopes$not_in_ci)
+```
+
+From code above we can see that 37.8% of our confidence intervals do not include the true value. If our estimates were good our confidence intervals should not include the true value 5% of the time. This is quite the discrepancy, and the code below is used to repeat the simulations above for different variances of the noise in log-space to determine its effect on our confidence interval coverage.
+
+```{r, echo=F, results=F}
+# Define a function to repeat the experiment above multiple times
+get_ooci_frac <- function(sd, n_sim, n_sample) {
+  seeds <- round(runif(n_sim, 0, 1000))
+  dfs <- data.frame()
+  for (i in 1:n_sim) {
+    set.seed(seeds[i])
+    x_log <- rnorm(n_sample, 10)
+    y_log <- 3 + x_log + rnorm(n_sample, sd=sd)
+    x <- exp(x_log)
+    y <- exp(y_log)
+  
+    model <- lm(y~x)
+    df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+    df$iter <- i
+    dfs <- rbind(dfs, df)
+  }
+  slopes <- filter(dfs, term=='x')
+  slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+  frac_not_in_ci <- mean(slopes$not_in_ci)
+  return(frac_not_in_ci)
+}
+
+sds <- c(1e-3, 1e-5, 1e-4, 1e-3, 0.01, 0.1, 1, 10)
+fracs <- 1:length(sds)
+for (i in 1:length(sds)) {
+  fracs[i] <- get_ooci_frac(sds[i], 1000, 50)
+}
+```
+
+
+```{r, echo=F}
+ggplot() + geom_point(aes(x=log10(sds), y=fracs)) +
+  labs(x='Log10(sigma)', y="Fraction of CI's not including True Value")
+```
+
+From the plot above we can see that there are a couple of points that don't quite follow the trend, but for the most part as our error in log-space increases.
+
+### Remedy - Transformation
+
+#### Box Cox
+Now that we understand potential impacts, it would be useful to understand how we can address the issue so we can use the results from our model for further analysis. One common way to address this is through application of transformations to the response and/or the predictor variables, in particular the use of a Box-Cox transformation can come in handy and the analysis can be done quickly in R. I won't discuss more about the Box-Cox transformation but you can reed more about it in [this article](https://towardsdatascience.com/box-cox-transformation-explained-51d745e34203) . We will try this transformation first.
+
+```{r}
+boxCox(linear)
+```
+
+From the plot above we can see that applying a 0.5 power (or square root) should help us out, so we will specify that in our model.
+
+```{r}
+transform_y_lm <- lm(sqrt(y) ~ x)
+summary(transform_y_lm)
+plot_resids(transform_y_lm)
+```
+Based on what I'm seeing above, it looks like the transformation did a nice job of fixing our issue with non-constant varaince! Let's quickly examine the normality of the residuals (even though that is not the focus of this section) with the Q-Q Plot and how it compares with our previous model. 
+
+**Previous Model:**
+```{r}
+# Previous model
+plot_resid_qq <- function(model) {
+  ggplot() + 
+    geom_qq(aes(sample=model$residuals), color='dodgerblue') + 
+    geom_qq_line(aes(sample=model$residuals), color='dodgerblue') +
+    labs(title='Normal Q-Q', x='Theoretical Quantiles', y='Standardized Residuals')
+}
+plot_resid_qq(linear)
+```
+
+**Transformed Model:**
+```{r}
+plot_resid_qq(transform_y_lm)
+```
+
+
+We can see that our previous model did not have normally distributed residuals, but our newly transformed model does. This is great news! On the downside we have given up some interpretability since the coefficients of our model as shown below now describe the change in $sqrt(y)$ with a unit change in $x$ instead of $y$ with a unit change in $x$.
+
+```{r, echo=F}
+transform_y_lm
+```
+It's always good to check a plot of the the observed values vs the fitted values as another check on the models predictions. It's hard to know for sure since we don't have too many of the higher magnitude values, but it looks to me like we are not quite capturing the linear relationship we saw in the data even if the mean of the residuals did not have some clearly bad trends.
+```{r}
+ggplot() + 
+  geom_point(aes(x=y, y=transform_y_lm$fitted.values)) +
+  labs(title='Parity Plot', x='Observed Values', y='Fitted Values')
+```
+
+
+#### Log
+Knowing something about the process can be very helpful in selecting a transformation, especially one that may have physical meaning or may lead to better interpretability. We don't always know which transformations we should choose ahead of time, so we may also choose to try a few and compare. One common transformation that I have found useful is the log transformation (although each case needs to be evaluated on its own), and given that we saw a linear relationship between x and y it may make sense to apply the same transformation to both y and x to preserve linearity.  We will try this next.
+
+```{r}
+log_transform_lm <- lm(log(y) ~ log(x))
+
+plot_resids(log_transform_lm, span=10)
+```
+
+It appears that this transformation has also taken care of our constant variance issue, although we should have expected this to be the case since we created the model. Lets check the normality of the residuals next:
+
+```{r}
+plot_resid_qq(log_transform_lm)
+```
+
+As we also would have expected, this transformation has also resulted in a QQ-plot that suggests our residuals are normally distributed. One last check is for autocorrelation, were the plot below demonstrates that this is not an issue in our dataset.
+```{r}
+acf(log_transform_lm$residuals)
+```
+
+Because our assumptions are followed we now know that we should have good 
+
+### Remedy - Weighted Least Squares (WLS)
+
+#### First, a new data generating process
+WLS won't address the issue of non-normally distributed residuals that we saw above, but it can be a good option for addressing the non-constant variance. To better demonstrate this I will create a new data generating process which follows the model $y \sim 2x + 3 + 1.5xN(\mu=0, \sigma^2=0.5^2)$. Below we generate a sample from the process, and quickly check some of the diagnostic plots.
+
+```{r}
+set.seed(42)
+n_sample = 50
+x <- rnorm(n_sample, mean=200, sd=75)
+y <- 2 * x + 3 + 2.5 * x * rnorm(n_sample, mean=0, sd=0.5)
+
+linear2 <- lm(y~x)
+ggplot() + 
+  geom_point(aes(x=x, y=y), alpha=0.5, size=2) +
+  geom_abline(
+    intercept=linear2$coefficients['(Intercept)'],
+    slope=linear2$coefficients['x'],
+    color='firebrick'
+    )
+
+plot_resids(linear2)
+plot_resid_qq(linear2)
+```
+In the pots above the we can see that we clearly have non-constant variance again. The trend line shows a potential trend in the mean of the residuals, but this may be heavily influenced by the large negative residual and I have a hard time picking out a trend in the mean of the residuals otherwise. We can see that the distribution of the residuals is normal, so the only problem we need to address is the non-constant variance.
+
+Because I introduced a new data generating process, we will quickly look at the impacts it has on parameter estimation
+
+```{r, echo=F}
+n_sample <- 50 # Number of points in each sample
+n_sim <- 1000 # Number of simulations to run
+set.seed(60)
+seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
+true_val <- 2 # True value of the slope
+
+dfs <- data.frame()
+for (i in 1:n_sim) {
+  set.seed(seeds[i])
+  
+  # Get the X and Y data described by the model above
+  x_sample <- rnorm(n_sample, mean=200, sd=75)
+  y_sample <- 2 * x_sample + 3 + 2.5 * x_sample * rnorm(n_sample, mean=0, sd=0.5)
+
+  # Fit the model and record its parameters
+  model <- lm(y_sample~x_sample)
+  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+  df$iter <- i
+  dfs <- rbind(dfs, df)
+}
+
+# Filter to just the slope parameter and plot a distribution of the calculated slopes
+slopes <- filter(dfs, term=='x_sample')
+ggplot(slopes, aes(x=estimate)) +
+  geom_vline(aes(xintercept=true_val, color='True Value')) +
+  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
+  geom_density(aes(color='Estimate Density')) +
+  geom_rug() +
+  labs(x='Estimated Value', y='Density')
+
+# Calculate when an estimates confidence interval does not include the true value
+slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+```
+
+
+```{r}
+# Calculate the fraction of observations where the true value is not included
+mean(slopes$not_in_ci)
+```
+
+From the plot and output above we can see that our mean estimated value is much closer to the true value. Although the fraction outside of confidence intervals that do not capture the true value is significantly better than before (partially due to the distribution of errors which we will discuss later), it still isn't as great as it should be. 
+
+#### Struction of weights
+While we could again try some transformations in an attempt to resolve the non-constant variance issue, I will demonstrate the use of a WLS method. First we need to describe how the residuals are related to our predicted value. To do this lets plot the absolute value of the residuals vs. the fitted values (similar to but, slightly different from one of our previous diagnostic plots).
+```{r}
+resid_lm <- lm(abs(linear2$residuals) ~ x)
+ggplot() + 
+  geom_point(aes(x=x, y=abs(linear2$residuals))) +
+  geom_abline(
+    intercept=resid_lm$coefficients['(Intercept)'],
+    slope=resid_lm$coefficients['x'],
+    color='firebrick'
+    )
+plot_resids(resid_lm)
+plot_resid_qq(resid_lm)
+summary(resid_lm)
+```
+Here a linear model to describe the absolute value of residuals appears to do fairly well. 
+
+#### Fitting model
+We will use the linear model found above to calculate the weights for our linear regression which will be the inverse of our estimated variance.
+```{r}
+est_var <- resid_lm$fitted.values^2
+weights <- 1 / est_var
+wls_lm <- lm(y~x, weights=weights)
+summary(wls_lm)
+
+summary(linear2)
+```
+We can see by comparing the two model summaries that our coefficients and standard errors have changes substantially. In this case it would be best to iterate where we fit another linear model to the new residuals and use that for our weights and keep iterating until our parameters have stabilized. I have written a function to do just this
+
+```{r}
+source('iterative_wls.R')
+data <- data.frame(x, y)
+names(data) <- c('x.1', 'y.1')
+iwls_lm <- iwls(y.1~x.1, data=data)
+
+summary(linear2)
+summary(iwls_lm)
+```
+
+Turns out it didn't really need to iterate very much. 
+
+```{r}
+n_sample <- 50 # Number of points in each sample
+n_sim <- 1000 # Number of simulations to run
+set.seed(60)
+seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
+true_val <- 2 # True value of the slope
+
+dfs <- data.frame()
+for (i in 1:n_sim) {
+  set.seed(seeds[i])
+  
+  # Get the X and Y data described by the model above
+  x_sample <- rnorm(n_sample, mean=200, sd=75)
+  y_sample <- 2 * x_sample + 3 + 2.5 * x_sample * rnorm(n_sample, mean=0, sd=0.5)
+  sample_df <- data.frame(x_sample, y_sample)
+  names(sample_df) <- c('x_iter_sample', 'y_iter_sample')
+  
+  # Fit the model and record its parameters
+  model <- iwls(y_iter_sample ~ x_iter_sample, data=sample_df, verbose=FALSE)
+  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+  df$iter <- i
+  dfs <- rbind(dfs, df)
+}
+```
+
+
+```{r}
+# Filter to just the slope parameter and plot a distribution of the calculated slopes
+slopes_wls <- filter(dfs, term=='x_iter_sample')
+ggplot(slopes_wls, aes(x=estimate)) +
+  geom_vline(aes(xintercept=true_val, color='True Value')) +
+  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
+  geom_density(aes(color='Estimate Density')) +
+  geom_density(aes(slopes$estimate, color='non-WLS Estimate'))+
+  geom_rug() +
+  labs(x='Estimated Value', y='Density')
+
+# Calculate when an estimates confidence interval does not include the true value
+slopes_wls <- mutate(slopes_wls, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+```
+```{r}
+mean(slopes_wls$not_in_ci)
+```
+```{r}
+slopes$type <-  'Non-WLS'
+slopes_wls$type <- 'WLS'
+comb_slopes <- bind_rows(slopes, slopes_wls)
+comb_slopes <- mutate(slopes, interval_length=conf.high - conf.low)
+
+ggplot(comb_slopes, aes(x=interval_length, color=type)) +
+  geom_density()
+```
+```{r}
+slopes
+```
+
+
+## Normally Distributed Errors
+
+## Independent Errors
