@@ -16,6 +16,7 @@ library(ggplot2)
 library(broom)
 library(car)
 source('iterative_wls.R')
+source('utils.R')
 ```
 
 
@@ -82,12 +83,6 @@ summary(linear)
 We can see from the above that the model may not really fit the data very well, and we should try something else. A common way in many cases which may not be straight forward is to look for a trend in the residuals (remember the mean shoudl be 0). When we look at the residuals as plotted below we can see a trend which would not exist if there was a linear relationship between $X$ and $Y$. Even if we just looked at some of the statistics from R we would be suspect of this model given the low R^2. 
 
 ```{r, echo=F}
-plot_resids <- function(model, span=5.0) {
-  ggplot() + 
-    geom_point(aes(x=model$fitted, y=model$residuals)) + 
-    geom_smooth(aes(x=model$fitted, y=model$residuals), span=span) + 
-    labs(title='Residuals vs. Predictor', x='Fitted Values', y='Residuals')
-}
 plot_resids(linear)
 ```
 
@@ -190,27 +185,6 @@ From code above we can see that 37.8% of our confidence intervals do not include
 
 ```{r, echo=F, results=F}
 # Define a function to repeat the experiment above multiple times
-get_ooci_frac <- function(sd, n_sim, n_sample) {
-  seeds <- round(runif(n_sim, 0, 1000))
-  dfs <- data.frame()
-  for (i in 1:n_sim) {
-    set.seed(seeds[i])
-    x_log <- rnorm(n_sample, 10)
-    y_log <- 3 + x_log + rnorm(n_sample, sd=sd)
-    x <- exp(x_log)
-    y <- exp(y_log)
-  
-    model <- lm(y~x)
-    df <- tidy(model, conf.int=TRUE, conf.level=0.95)
-    df$iter <- i
-    dfs <- rbind(dfs, df)
-  }
-  slopes <- filter(dfs, term=='x')
-  slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
-  frac_not_in_ci <- mean(slopes$not_in_ci)
-  return(frac_not_in_ci)
-}
-
 sds <- c(1e-3, 1e-5, 1e-4, 1e-3, 0.01, 0.1, 1, 10)
 fracs <- 1:length(sds)
 for (i in 1:length(sds)) {
@@ -247,12 +221,6 @@ Based on what I'm seeing above, it looks like the transformation did a nice job 
 **Previous Model:**
 ```{r}
 # Previous model
-plot_resid_qq <- function(model) {
-  ggplot() + 
-    geom_qq(aes(sample=model$residuals), color='dodgerblue') + 
-    geom_qq_line(aes(sample=model$residuals), color='dodgerblue') +
-    labs(title='Normal Q-Q', x='Theoretical Quantiles', y='Standardized Residuals')
-}
 plot_resid_qq(linear)
 ```
 
@@ -295,175 +263,7 @@ As we also would have expected, this transformation has also resulted in a QQ-pl
 acf(log_transform_lm$residuals)
 ```
 
-Because our assumptions are followed we now know that we should have good 
-
-### Remedy - Weighted Least Squares (WLS)
-
-#### First, a new data generating process
-WLS won't address the issue of non-normally distributed residuals that we saw above, but it can be a good option for addressing the non-constant variance. To better demonstrate this I will create a new data generating process which follows the model $y \sim 2x + 3 + 1.5xN(\mu=0, \sigma^2=0.5^2)$. Below we generate a sample from the process, and quickly check some of the diagnostic plots.
-
-```{r}
-set.seed(42)
-n_sample = 50
-x <- rnorm(n_sample, mean=200, sd=75)
-y <- 2 * x + 3 + 2.5 * x * rnorm(n_sample, mean=0, sd=0.5)
-
-linear2 <- lm(y~x)
-ggplot() + 
-  geom_point(aes(x=x, y=y), alpha=0.5, size=2) +
-  geom_abline(
-    intercept=linear2$coefficients['(Intercept)'],
-    slope=linear2$coefficients['x'],
-    color='firebrick'
-    )
-
-plot_resids(linear2)
-plot_resid_qq(linear2)
-```
-In the pots above the we can see that we clearly have non-constant variance again. The trend line shows a potential trend in the mean of the residuals, but this may be heavily influenced by the large negative residual and I have a hard time picking out a trend in the mean of the residuals otherwise. We can see that the distribution of the residuals is normal, so the only problem we need to address is the non-constant variance.
-
-Because I introduced a new data generating process, we will quickly look at the impacts it has on parameter estimation
-
-```{r, echo=F}
-n_sample <- 50 # Number of points in each sample
-n_sim <- 1000 # Number of simulations to run
-set.seed(60)
-seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
-true_val <- 2 # True value of the slope
-
-dfs <- data.frame()
-for (i in 1:n_sim) {
-  set.seed(seeds[i])
-  
-  # Get the X and Y data described by the model above
-  x_sample <- rnorm(n_sample, mean=200, sd=75)
-  y_sample <- 2 * x_sample + 3 + 2.5 * x_sample * rnorm(n_sample, mean=0, sd=0.5)
-
-  # Fit the model and record its parameters
-  model <- lm(y_sample~x_sample)
-  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
-  df$iter <- i
-  dfs <- rbind(dfs, df)
-}
-
-# Filter to just the slope parameter and plot a distribution of the calculated slopes
-slopes <- filter(dfs, term=='x_sample')
-ggplot(slopes, aes(x=estimate)) +
-  geom_vline(aes(xintercept=true_val, color='True Value')) +
-  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
-  geom_density(aes(color='Estimate Density')) +
-  geom_rug() +
-  labs(x='Estimated Value', y='Density')
-
-# Calculate when an estimates confidence interval does not include the true value
-slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
-```
-
-
-```{r}
-# Calculate the fraction of observations where the true value is not included
-mean(slopes$not_in_ci)
-```
-
-From the plot and output above we can see that our mean estimated value is much closer to the true value. Although the fraction outside of confidence intervals that do not capture the true value is significantly better than before (partially due to the distribution of errors which we will discuss later), it still isn't as great as it should be. 
-
-#### Struction of weights
-While we could again try some transformations in an attempt to resolve the non-constant variance issue, I will demonstrate the use of a WLS method. First we need to describe how the residuals are related to our predicted value. To do this lets plot the absolute value of the residuals vs. the fitted values (similar to but, slightly different from one of our previous diagnostic plots).
-```{r}
-resid_lm <- lm(abs(linear2$residuals) ~ x)
-ggplot() + 
-  geom_point(aes(x=x, y=abs(linear2$residuals))) +
-  geom_abline(
-    intercept=resid_lm$coefficients['(Intercept)'],
-    slope=resid_lm$coefficients['x'],
-    color='firebrick'
-    )
-plot_resids(resid_lm)
-plot_resid_qq(resid_lm)
-summary(resid_lm)
-```
-Here a linear model to describe the absolute value of residuals appears to do fairly well. 
-
-#### Fitting model
-We will use the linear model found above to calculate the weights for our linear regression which will be the inverse of our estimated variance.
-```{r}
-est_var <- resid_lm$fitted.values^2
-weights <- 1 / est_var
-wls_lm <- lm(y~x, weights=weights)
-summary(wls_lm)
-
-summary(linear2)
-```
-We can see by comparing the two model summaries that our coefficients and standard errors have changes substantially. In this case it would be best to iterate where we fit another linear model to the new residuals and use that for our weights and keep iterating until our parameters have stabilized. I have written a function to do just this
-
-```{r}
-source('iterative_wls.R')
-data <- data.frame(x, y)
-names(data) <- c('x.1', 'y.1')
-iwls_lm <- iwls(y.1~x.1, data=data)
-
-summary(linear2)
-summary(iwls_lm)
-```
-
-Turns out it didn't really need to iterate very much. 
-
-```{r}
-n_sample <- 50 # Number of points in each sample
-n_sim <- 1000 # Number of simulations to run
-set.seed(60)
-seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
-true_val <- 2 # True value of the slope
-
-dfs <- data.frame()
-for (i in 1:n_sim) {
-  set.seed(seeds[i])
-  
-  # Get the X and Y data described by the model above
-  x_sample <- rnorm(n_sample, mean=200, sd=75)
-  y_sample <- 2 * x_sample + 3 + 2.5 * x_sample * rnorm(n_sample, mean=0, sd=0.5)
-  sample_df <- data.frame(x_sample, y_sample)
-  names(sample_df) <- c('x_iter_sample', 'y_iter_sample')
-  
-  # Fit the model and record its parameters
-  model <- iwls(y_iter_sample ~ x_iter_sample, data=sample_df, verbose=FALSE)
-  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
-  df$iter <- i
-  dfs <- rbind(dfs, df)
-}
-```
-
-
-```{r}
-# Filter to just the slope parameter and plot a distribution of the calculated slopes
-slopes_wls <- filter(dfs, term=='x_iter_sample')
-ggplot(slopes_wls, aes(x=estimate)) +
-  geom_vline(aes(xintercept=true_val, color='True Value')) +
-  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
-  geom_density(aes(color='Estimate Density')) +
-  geom_density(aes(slopes$estimate, color='non-WLS Estimate'))+
-  geom_rug() +
-  labs(x='Estimated Value', y='Density')
-
-# Calculate when an estimates confidence interval does not include the true value
-slopes_wls <- mutate(slopes_wls, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
-```
-```{r}
-mean(slopes_wls$not_in_ci)
-```
-```{r}
-slopes$type <-  'Non-WLS'
-slopes_wls$type <- 'WLS'
-comb_slopes <- bind_rows(slopes, slopes_wls)
-comb_slopes <- mutate(slopes, interval_length=conf.high - conf.low)
-
-ggplot(comb_slopes, aes(x=interval_length, color=type)) +
-  geom_density()
-```
-```{r}
-slopes
-```
-
+Because our assumptions are followed we now know that we should have good coverage rates for our confidence intervals and non-biased estimates of the model parameters.
 
 ## Normally Distributed Errors
 

@@ -16,6 +16,7 @@ library(ggplot2)
 library(broom)
 library(car)
 source('iterative_wls.R')
+source('utils.R')
 ```
 
 ### Remedy - Weighted Least Squares (WLS)
@@ -185,7 +186,3 @@ ggplot(comb_slopes, aes(x=interval_length, color=type)) +
 slopes
 ```
 
-
-## Normally Distributed Errors
-
-## Independent Errors
