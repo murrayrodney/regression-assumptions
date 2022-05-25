@@ -1,0 +1,260 @@
+---
+title: "Normally Distributed Errors"
+author: "Rodney Murray"
+date: "5/20/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=F, result=F, message=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(car)
+source('iterative_wls.R')
+source('utils.R')
+```
+
+# Normally Distributed Errors
+
+## Background and Identification
+
+In order to make statements about the sampling distribution of the model parameters $\hat \beta_0$ and $\hat \beta_1$ we need to assume that the residuals are normally distributed. Typically we use a QQ plot as we saw above to help diagnose this, where the data points are expected to lie on a relatively straight line. In this case I will create a data set according to the model $y \sim 2x + 3 + T(\nu=2)*3$ to demonstrate what may occur when we have non-normally (but symmetrically) distributed errors. 
+
+As a quick reminder, the T distribution has heavier tails, especailly in the case described as demonstrated in the plot below.
+```{r}
+extent <- 6
+dists <- data.frame(x=seq(-extent, extent, length.out=250))
+dists = dists %>% mutate(
+  t=dt(x, df=2),
+  normal=dnorm(x)
+) %>% pivot_longer(t:normal)
+
+ggplot(dists, aes(x=x, y=value, color=name)) + geom_line()
+```
+
+
+
+```{r}
+set.seed(42)
+n_sample <- 50
+x <- rnorm(n_sample, mean=10, sd=2)
+y <- 2 * x + 3 + rt(n_sample, 2) * 1
+
+non_norm_lm <- lm(y~x)
+summary(non_norm_lm)
+
+ggplot() + geom_point(aes(x, y))
+
+ggplot() + 
+  geom_qq(aes(sample=non_norm_lm$residuals)) +
+  geom_qq_line(aes(sample=non_norm_lm$residuals))
+```
+
+In this case we can see the effect of the heavier tails from the T distribution where the points toward the left and right ends of the plot deviate from the line. 
+
+## Effections of Assumption Violation (Symmetrical)
+
+If we identify a scenario where this assumption is verified, what is the effect of this non-normality? To investigate this we will again run simulations where we sample from the data generating process described and take a look at the distribution of the parameter estimates and the confidence interval coverage.
+
+```{r, echo=F}
+n_sample <- 50 # Number of points in each sample
+n_sim <- 1000 # Number of simulations to run
+set.seed(42)
+seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
+true_val <- 2 # True value of the slope
+
+dfs <- data.frame()
+for (i in 1:n_sim) {
+  set.seed(seeds[i])
+  
+  # Get the X and Y data described by the model above
+  x_sample <- rnorm(n_sample, mean=10, sd=2)
+  y_sample <- 2 * x_sample + 3 + rt(n_sample, 2) * 1
+
+  # Fit the model and record its parameters
+  model <- lm(y_sample~x_sample)
+  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+  df$iter <- i
+  dfs <- rbind(dfs, df)
+}
+
+# Filter to just the slope parameter and plot a distribution of the calculated slopes
+slopes <- filter(dfs, term=='x_sample')
+ggplot(slopes, aes(x=estimate)) +
+  geom_vline(aes(xintercept=true_val, color='True Value')) +
+  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
+  geom_density(aes(color='Estimate Density')) +
+  geom_rug() +
+  labs(x='Estimated Value', y='Density')
+
+# Calculate when an estimates confidence interval does not include the true value
+slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+mean(slopes$not_in_ci)
+```
+
+In this case we can see that the mean of the estimates is very close to the true value, indicating that OLS is fairly robust against bias when the errors are symmetrically distributed. However we can see that we have fewer than the expected number of cases where the confidence intervals don't include the true value, this is because the heavier tails in the T distributed residuals are making our confidence intervals larger than they need to be. With that said the difference isn't horrible, thanks to the central limit theorem and statements around the sampling distribution of the coefficients may still be acceptable. 
+
+From what we saw above and with knowledge about the T distribution it is clear that the prediction intervals (or confidence intervals for new observations) will not be large enough, and in this case since we are not using sums or means we cannot rely on the central limit theorem to solve our problems. This is illustrated where I will use the first model that was fit, and evaluate a large number of new sample points to evaluate the prediction intervals. For reference I will also include a model where the data generated has errors that follow a normal distribution.
+
+```{r, warning=FALSE}
+y_norm_fit <- 2 * x + 3 + rnorm(n_sample, sd=1)
+
+# ggplot() + geom_point(aes(x, y, color='T Error')) + geom_point(aes(x, y_norm_fit, color='Norm Error'))
+norm_lm <- lm(y_norm_fit~x)
+
+set.seed(60)
+n_new_samples <- 100000
+x_new <- rnorm(n_new_samples, mean=10, sd=2)
+y_new_t <- 2 * x_new + 3 + rt(n_new_samples, 2) * 1
+y_new_norm <- 2 * x_new + 3 + rnorm(n_new_samples, sd=1)
+
+new_df <- data.frame(x=x_new, y_t=y_new_t, y_norm=y_new_norm)
+y_non_norm_pred <- data.frame(predict(non_norm_lm, new_df, interval='predict'))
+y_non_norm_pred <- mutate(y_non_norm_pred,type='T Errors', y_new=y_new_t, x_new=x_new)
+
+y_norm_pred <- data.frame(predict(norm_lm, new_df, interval='predict'))
+y_norm_pred <- mutate(y_norm_pred, type='Norm Errors', y_new=y_new_norm, x_new=x_new)
+
+pred_dfs <- bind_rows(y_non_norm_pred, y_norm_pred)
+pred_dfs %>% 
+  mutate(out_of_pred_int = y_new < lwr | y_new > upr) %>% 
+  group_by(type) %>% 
+  summarize(frac_out_of_pred_int = mean(out_of_pred_int))
+```
+
+
+```{r, warning=FALSE}
+ggplot(pred_dfs, aes(x_new, y_new)) +
+  facet_wrap(~type) +
+  geom_point(alpha=0.3) + 
+  geom_line(aes(y=upr, color='Prediciton Interval')) + 
+  geom_line(aes(y=lwr, color='Prediciton Interval')) + 
+  ylim(-100, 100) +
+  labs(title='Prediciton Interval Comparison')
+```
+The chart and table nicely demonstrates the problem of using the prediction intervals when the residuals are not normally distributed. In the case where they follow something that has heavier tails like the T distribution the prediction intervals are far to close to the mean and 7.6% of the points are outside of the prediction intervals instead of closer to 5% like we see with normally distributed errors (when using a 95% confidence level). If we had a distribution that had lighter tails than the normal (like a scaled beta distribution) we would have prediction intervals that are too far from the mean. 
+
+### Potential Remedies
+
+One should think about what they are trying to get from the model. If reliable estimates of the uncertainty in the model parameters are needed, then given sufficient data the CLT will likely prove useful to help reduce the error with larger samples for both point estimates as well as probability statements around the sampling distribution of parameters. If prediction intervals are important then we we absolutely need to find a different model, or way to transform the data so that the errors are normally distributed.
+
+## Effects of Assumption Violation (unsymmetrical)
+
+If we run into situations where the distribution of the parameter is not normal or symmetric, then we will experience issues similar to what we saw with the confidence and prediction intervals before. In order to investigate the effects of the this problem we will use the same model as above with the exception that the errors will be distributed as $Gamma(\alpha=3, \beta=1/3)$ where $\alpha$ is the shape parameter and $\beta$ is the rate parameter. Below the density of this distribution is plotted to help provide some perspective on how the errors will be distributed.
+
+```{r, echo=F}
+shape = 3
+scale = 3
+y_gamma_fit <- 2 * x + 3 + rgamma(n_sample, shape=shape, scale=scale)
+
+# Plot the 
+thresh <- 0.0001
+bounds <- qgamma(c(thresh, 1 - thresh), shape=shape, scale=scale)
+ggplot() + 
+  geom_function(fun=dgamma, args=list(shape=shape, scale=scale)) + 
+  xlim(bounds[1], bounds[2]) + 
+  labs(title='Gamma Density', y='Density', x='Error')
+```
+
+Below we plot the data generated by the process described, as well as a line representing our fitted model.
+```{r}
+gamma_lm <- lm(y_gamma_fit ~ x)
+ggplot() + 
+  geom_point(aes(x, y_gamma_fit)) + 
+  geom_abline(
+    intercept=gamma_lm$coefficients['(Intercept)'],
+    slope=gamma_lm$coefficients['x'],
+    color='firebrick'
+    ) +
+  labs(x='X', y='Y')
+```
+
+As expected when we plot the residuals vs. the fitted values we see no trend in the mean and we see that the residuals ahve constant variance.
+```{r, echo=F, message=F}
+plot_resids(gamma_lm)
+```
+
+However when we make a QQ plot of the residuals we can see as expected that they are not normally distributed. and we have a pretty heavy right tail relative to the normal distribution. 
+```{r}
+plot_resid_qq(gamma_lm)
+```
+
+Now we will do the same as before and run a bunch of simulations to investigate the effects of non-normally distributed errors on how our estimates are distributed and the coverage rates of our confidence intervals. 
+
+```{r, echo=F}
+n_sample <- 50 # Number of points in each sample
+n_sim <- 2500 # Number of simulations to run
+set.seed(42)
+seeds <- round(runif(n_sim, 0, 1000)) # Get different seeds for each simulation since a seed was set earlier
+true_val <- 2 # True value of the slope
+
+dfs <- data.frame()
+system.time(
+for (i in 1:n_sim) {
+  set.seed(seeds[i])
+  
+  # Get the X and Y data described by the model above
+  x_sample <- rnorm(n_sample, mean=10, sd=2)
+  y_sample <- 2 * x_sample + 3 + rgamma(n_sample, shape=shape, scale=scale)
+
+  # Fit the model and record its parameters
+  model <- lm(y_sample~x_sample)
+  df <- tidy(model, conf.int=TRUE, conf.level=0.95)
+  df$iter <- i
+  dfs <- rbind(dfs, df)
+}
+)
+```
+
+```{r, echo=F}
+# Filter to just the slope parameter and plot a distribution of the calculated slopes
+slopes <- filter(dfs, term=='x_sample')
+ggplot(slopes, aes(x=estimate)) +
+  geom_vline(aes(xintercept=true_val, color='True Value')) +
+  geom_vline(aes(xintercept=mean(estimate), color='Mean Estimated Value')) +
+  geom_density(aes(color='Estimate Density')) +
+  geom_function(fun=dnorm, args=list(mean=mean(slopes$estimate), sd=sd(slopes$estimate))) +
+  geom_rug() +
+  labs(x='Estimated Value', y='Density')
+
+# Calculate when an estimates confidence interval does not include the true value
+slopes <- mutate(slopes, not_in_ci=(true_val < conf.low) | (true_val > conf.high)) 
+mean(slopes$not_in_ci)
+```
+
+From the plot above we can see that our estimated value of the slope appears to be unbiased, and the estimates appear to be normally (or very close to normally) distributed as we would expect from the CLT. We do see that our coverage rates are a potentially a little high, but it also could be better estimated with a larger number of samples. Because of the CLE we would expect the coverage rates of our confidence intervals to be quite close to the confidence level specified.
+
+Although the slope again was estimated pretty well because of the CLT, we cannot expect our prediction intervals to perform similarly because we have no averages or sums which would allow us to apply the CLT. Because of the shape of the gamma PDF that we saw above, we should expect to see more points fall outside of the prediction intervals than one would expect if the residuals were normally distributed. New sample points are generated and plotted with the confidence intervals below, and the portion of new observations that fall outside of the prediction intervals are calculated.
+
+```{r}
+set.seed(60)
+n_new_samples <- 10000
+x_new <- rnorm(n_new_samples, mean=10, sd=2)
+y_new_gamma <- 2 * x_new + 3 + rgamma(n_new_samples, shape=shape, scale=scale)
+
+new_df <- data.frame(x=x_new, y_gamma=y_new_gamma)
+y_gamma_pred <- data.frame(predict(gamma_lm, new_df, interval='predict'))
+y_gamma_pred <- mutate(y_gamma_pred, type='Gamma Errors', y_new=y_new_gamma, x_new=x_new)
+
+ggplot(y_gamma_pred, aes(x_new, y_new)) +
+  facet_wrap(~type) +
+  geom_point(alpha=0.15) + 
+  geom_line(aes(y=upr, color='Prediciton Interval')) + 
+  geom_line(aes(y=lwr, color='Prediciton Interval')) + 
+  labs(title='Prediciton Interval Comparison')
+
+y_gamma_pred %>% 
+  mutate(out_of_pred_int = y_new < lwr | y_new > upr) %>% 
+  group_by(type) %>% 
+  summarize(frac_out_of_pred_int = mean(out_of_pred_int))
+```
+
+As expected the fraction of observations outside of the prediction interval is higher than you would expect if the residuals were normally distributed, and we can see this reflected on the plot. Because of how the gamma distribution used to generate the error was skewed, we can also see that most of the points that fall outside of the prediction interval are too high. 
+
+### Potentail Remedies
+As I said before, one should really think about what they are trying to get from the model. If estimates of parameters like the slope that describes the relationship between two variables is important, then given sufficient data the CLT will likely prove useful even in the case where we have asymmetrically distributed errors and the probability statements about the sampling distributions will likely be reasonable too. If one is interested in using the prediciton intervals for decision, then a different model or a transform (if you can find one that works) absolutely needs to be considered because the calculated prediction intervals will not be correct.
